@@ -1,6 +1,6 @@
 # Real-Time Trade Streaming Engine
 
-A pure backend, open-ended, distributed trade data pipeline that ingests live trades from Binance WebSocket, processes them into OHLC candlestick data, and streams them to consumers via a multi-protocol microservices architecture.
+A pure backend, open-ended, distributed trade data pipeline  deployed on AWS-ECS that ingests live trades from Binance WebSocket, processes them into OHLC candlestick data, and streams them to consumers via a multi-protocol microservices architecture.
 
 > No exchange klines used. Raw Trades are used for calculating the OHLCV
 
