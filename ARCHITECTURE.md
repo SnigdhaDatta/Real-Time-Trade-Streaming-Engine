@@ -1,312 +1,282 @@
-# Real-Time Trade Streaming Engine
+# 🏗️ CandleFlow Architecture
 
-A pure backend, open-ended, distributed trade data pipeline deployed on AWS ECS that ingests live trades from Binance WebSocket, processes them into OHLC candlestick data, and streams them to consumers via a multi-protocol microservices architecture.
+## Overview
 
-> No exchange klines used. Raw trades are used for calculating OHLCV candles.
+CandleFlow follows an **event-driven microservices architecture** designed for processing and distributing real-time cryptocurrency market data.
+
+Each service has a single responsibility and can be independently developed, deployed, and scaled.
+
+Communication between services is asynchronous through Apache Kafka wherever appropriate, keeping the architecture loosely coupled and fault tolerant.
 
 ---
 
-## System Architecture
+# High-Level Architecture
+
+```mermaid
+flowchart LR
+
+    Binance["📈 Binance WebSocket"]
+
+    subgraph Event Streaming Pipeline
+        K1["Kafka<br/>Raw Trades"]
+        Processor["OHLC Processor"]
+        DB[("TimescaleDB")]
+        Redis[("Redis Cache")]
+        K2["Kafka<br/>1m Candle Updates"]
+    end
+
+    subgraph Backend Services
+        WS["WebSocket Service"]
+        REST["REST API"]
+    end
+
+    CLI["🖥️ CandleFlow CLI"]
+
+    Binance --> K1
+    K1 --> Processor
+
+    Processor --> DB
+    Processor --> Redis
+    Processor --> K2
+
+    K2 --> WS
+
+    CLI -->|"Historical Data<br/>Latest Candle"| REST
+
+    REST --> Redis
+    REST --> DB
+
+    WS -->|"Live 1m Stream"| CLI
+```
+
+---
+
+# System Components
+
+## 1. Ingestion Service
+
+### Responsibility
+
+* Connects to Binance WebSocket.
+* Receives live trade events.
+* Publishes every trade to Kafka.
+
+### Dependencies
+
+* Binance WebSocket
+* Apache Kafka
+
+---
+
+## 2. OHLC Processor
+
+The OHLC Processor is the core service responsible for transforming raw trades into market candles.
+
+### Responsibilities
+
+* Consumes raw trades from Kafka.
+* Builds 1-minute OHLC candles.
+* Stores completed candles in TimescaleDB.
+* Updates Redis cache.
+* Publishes completed 1-minute candles to Kafka.
+
+### Dependencies
+
+* Apache Kafka
+* TimescaleDB
+* Redis
+
+### Continuous Aggregates
+
+Only **1-minute candles** are generated manually.
+
+Higher intervals are produced automatically by TimescaleDB Continuous Aggregates.
+
+Supported intervals:
+
+* 5m
+* 15m
+* 1h
+
+This significantly reduces application complexity while leveraging TimescaleDB's optimized aggregation engine.
+
+---
+
+## 3. WebSocket Service
+
+### Responsibility
+
+Provides live streaming of completed 1-minute candles.
+
+### Data Source
+
+Kafka
+
+### Notes
+
+* Consumes completed 1-minute candles from Kafka.
+* Broadcasts them to all connected CLI clients.
+* Does **not** query TimescaleDB.
+* Does **not** communicate with the REST API.
+
+---
+
+## 4. REST API
+
+The REST API serves historical candle data.
+
+### Supported Intervals
+
+* 1m
+* 5m
+* 15m
+* 1h
+
+### Request Flow
 
 ```text
-                        +---------------------------+
-                        |     Binance WebSocket     |
-                        |  (Live Raw Trade Feed)    |
-                        +---------------------------+
-                                     |
-                                     | raw trades
-                                     | { price, qty, time }
-                                     v
-                        +---------------------------+
-                        |    Ingestion Service      |
-                        |  (Binance WS consumer +   |
-                        |    Kafka producer)        |
-                        +---------------------------+
-                                     |
-                                     | publishes to Kafka
-                                     | key: pair (BTCUSDT, ETHUSDT...)
-                                     | partition per pair
-                                     v
-                        +---------------------------+
-                        |          Kafka            |
-                        |  (Partitioned by pair)    |
-                        |  Partition 0 → BTCUSDT    |
-                        |  Partition 1 → ETHUSDT    |
-                        |  Partition 2 → SOLUSDT    |
-                        +---------------------------+
-                                     |
-                                     | consumes trades
-                                     v
-                        +---------------------------+
-                        |    OHLC Processor         |
-                        |  (calculates candles)     |
-                        |  1m, 5m, 15m, 1h          |
-                        +---------------------------+
-                                     |
-                          +----------+----------+
-                          |                     |
-                          v                     v
-              +-----------------+    +--------------------+
-              |   TimescaleDB   |    |       Redis        |
-              | (all historical |    | (latest candle     |
-              |  candles store) |    |  cache only)       |
-              +-----------------+    +--------------------+
-                       |                       |
-                       |                       |
-                       v                       v
-           +--------------------+   +--------------------+
-           |    WS Service      |   |    REST Service    |
-           |  (gRPC Server +    |   |   (gRPC Client)    |
-           |  WS broadcaster)   |   +--------------------+
-           +--------------------+             |
-                       |                      |
-                       | WebSocket            | HTTP GET
-                       v                      v
-           +--------------------+   +--------------------+
-           |     CLI Tool       |   |   curl / browser   |
-           |  (live candles)    |   | (latest snapshot)  |
-           +--------------------+   +--------------------+
-
-
-           Internal gRPC connection:
-           REST Service ──── gRPC ────► WS Service
-           (forwards any              (stores to TimescaleDB
-            REST triggered             + broadcasts to CLI)
-            events)
+Client
+   │
+   ▼
+REST API
+   │
+   ▼
+Redis
+   │
+   ├── Cache Hit → Return Data
+   │
+   └── Cache Miss
+          │
+          ▼
+    TimescaleDB
+          │
+          ▼
+    Update Redis
+          │
+          ▼
+      Return Data
 ```
 
----
+### Responsibilities
 
-## Why This Data Flow?
-
-| Consumer | Source | Why |
-|---|---|---|
-| **curl / browser** | Redis | Shudhu latest candle dorkar, Redis fast cache ✅ |
-| **CLI Tool** | TimescaleDB → WS Service | Historical + live stream dorkar, TimescaleDB e sob stored ✅ |
-
-```
-Redis   → latest candle only    → REST → curl
-TimescaleDB → all candles       → WS Service → CLI
-```
+* Historical candle retrieval
+* Latest available candle retrieval
+* Redis caching
+* Database querying
 
 ---
 
-## Multi-Protocol Breakdown
+## 5. CandleFlow CLI
 
-| Protocol | Where Used | Why |
-|---|---|---|
-| **WebSocket (client)** | Binance → Ingestion Service | Live raw trade feed consume korte |
-| **Kafka** | Ingestion → OHLC Processor | Buffer + rate control, no data loss, partitioned by pair |
-| **REST (HTTP)** | Public API | Latest candle snapshot from Redis (curl/browser) |
-| **gRPC (HTTP/2)** | REST Service → WS Service | Internal low-latency microservice hop |
-| **WebSocket (server)** | WS Service → CLI Tool | Live candle streaming to consumers |
+The CLI communicates with two independent backend services.
 
----
+### REST API
 
-## Repository Structure
+Used for:
 
-```text
-real-time-trade-engine/
-│
-├── ARCHITECTURE.md                  # System design (this file)
-├── trade.proto                      # Shared gRPC schema contract
-├── docker-compose.yml               # Local dev setup
-│
-├── ingestion-service/               # Binance WS → Kafka producer
-│   ├── Dockerfile
-│   ├── package.json
-│   └── index.js
-│
-├── ohlc-processor/                  # Kafka consumer → OHLC → TimescaleDB + Redis
-│   ├── Dockerfile
-│   ├── package.json
-│   └── index.js
-│
-├── rest-service/                    # Public REST API + gRPC client
-│   ├── Dockerfile
-│   ├── package.json
-│   └── index.js
-│
-├── ws-service/                      # gRPC server + WS broadcaster + TimescaleDB reader
-│   ├── Dockerfile
-│   ├── package.json
-│   └── index.js
-│
-├── cli/                             # npm published CLI tool
-│   ├── package.json
-│   ├── index.js
-│   └── bin/
-│       └── trade-cli.js
-│
-├── site/                            # Static docs site (GitHub Pages)
-│   └── index.html
-│
-└── terraform/                       # AWS infrastructure as code
-    └── main.tf
-```
+* Historical candle retrieval
+* Fetching the latest available candle before starting a live session
 
----
-
-## Microservices Breakdown
-
-### 1. Ingestion Service
-- **Role**: Binance WebSocket client + Kafka producer
-- **What it does**: Connects to Binance live trade streams for multiple pairs, receives raw trades `{ price, qty, time }`, publishes each trade to Kafka with pair as key so same pair always goes to same partition
-- **Tech**: Node.js, `ws`, `kafkajs`
-- **Pairs**: BTCUSDT, ETHUSDT, SOLUSDT
-
-### 2. OHLC Processor Service
-- **Role**: Kafka consumer + candle calculator + storage writer
-- **What it does**: Consumes raw trades from Kafka partitions, accumulates trades per interval per pair, calculates OHLCV candles on interval close, stores all candles in TimescaleDB, caches only latest candle per pair in Redis
-- **Tech**: Node.js, `kafkajs`, `pg` (TimescaleDB), `ioredis`
-
-### 3. REST Service
-- **Role**: Public snapshot API + gRPC client
-- **What it does**: Exposes `GET /api/v1/candles/:pair` — reads latest candle from Redis and returns instantly. Also acts as gRPC client to forward any triggered events to WS service
-- **Tech**: Node.js, Express, `@grpc/grpc-js`, `ioredis`
-
-### 4. WS Service
-- **Role**: gRPC server + TimescaleDB reader + WebSocket broadcaster
-- **What it does**: Acts as gRPC server to receive internal messages. Reads candles from TimescaleDB, maintains open WebSocket connections with CLI subscribers, broadcasts live candles to correct pair channels
-- **Tech**: Node.js, `ws`, `@grpc/grpc-js`, `pg`
-
----
-
-## OHLC Calculation (No Exchange Klines)
-
-Raw trades from Binance are accumulated per time window per pair:
-
-```text
-Incoming trades for BTCUSDT (1 minute window):
-10:00:00 → price: 67420, qty: 0.5   ← Open
-10:00:15 → price: 67430, qty: 1.2   ← High
-10:00:30 → price: 67400, qty: 0.3   ← Low
-10:00:59 → price: 67410, qty: 0.8   ← Close
-
-Calculated OHLCV candle:
-O (Open)   = 67420  ← first trade price in window
-H (High)   = 67430  ← highest price in window
-L (Low)    = 67400  ← lowest price in window
-C (Close)  = 67410  ← last trade price in window
-V (Volume) = 2.8    ← total qty traded in window
-```
-
-Supported intervals: `1m`, `5m`, `15m`, `1h`
-
----
-
-## Data Flow (Step by Step)
-
-```text
-1.  Binance sends raw trades every ~100ms per pair
-2.  Ingestion service receives trades via WebSocket
-3.  Publishes to Kafka topic "raw-trades" with pair as key
-4.  Kafka routes same pair to same partition (ordered)
-5.  OHLC Processor consumes from Kafka partitions
-6.  Accumulates trades per interval per pair in memory
-7.  On interval close → calculates OHLCV candle
-8.  Stores candle in TimescaleDB (historical record)
-9.  Caches latest candle in Redis (fast snapshot access)
-10. CLI user subscribes via WS Service
-11. WS Service reads from TimescaleDB → pushes to CLI
-12. curl/browser hits REST Service → reads Redis → returns snapshot
-```
-
----
-
-## Public API
-
-### REST Endpoints (Redis backed — snapshot only)
+Examples
 
 ```bash
-# Latest candle snapshot
-GET /api/v1/candles/BTCUSDT?interval=1m
-→ { pair: "BTCUSDT", O: 67420, H: 67430, L: 67400, C: 67410, V: 2.8 }
+candleflow BTCUSDT --interval 5m
 
-# Available pairs
-GET /api/v1/pairs
-→ ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+candleflow BTCUSDT latest
 
-# Health check
-GET /health
-→ { status: "ok" }
+candleflow BTCUSDT --interval 15m --limit 20
 ```
 
-### CLI Tool (TimescaleDB backed — live stream)
+### WebSocket Service
+
+Used for:
+
+* Live streaming of 1-minute candles
+
+Example
 
 ```bash
-# Install
-npm install -g trade-stream-cli
-
-# Or without install
-npx trade-stream-cli subscribe --pair BTCUSDT --interval 1m
-
-# Output
-🟢 Connected to trade-stream-engine...
-
-BTCUSDT 1m Candle:
-O: 67420 | H: 67430 | L: 67400 | C: 67410 | V: 2.8
-O: 67410 | H: 67450 | L: 67400 | C: 67440 | V: 3.1
-O: 67440 | H: 67460 | L: 67420 | C: 67450 | V: 1.9
-...
-
-^C
-🔴 Disconnected.
+candleflow BTCUSDT
 ```
 
----
+### Live Session Flow
 
-## Cloud Infrastructure (AWS via Terraform)
+1. The CLI requests the latest available candle from the REST API.
+2. The latest candle is displayed immediately.
+3. The CLI establishes a WebSocket connection.
+4. Live 1-minute candle updates are streamed continuously.
 
-```text
-                         Internet
-                            |
-             +--------------+--------------+
-             |                             |
-      ALB (REST API)               NLB (WebSocket)
-             |                             |
-        Private Subnet               Private Subnet
-             |                             |
-      +-------------+             +-------------+
-      | ECS Fargate |             | ECS Fargate |
-      | rest-service| ── gRPC ──► |  ws-service |
-      +-------------+             +-------------+
-             |                             |
-             |                    +--------+--------+
-             |                    |                 |
-             v                    v                 v
-        ElastiCache          TimescaleDB      CLI consumers
-         (Redis)              (RDS/EC2)
-```
-
-- **VPC**: Private subnets for all services, public only for load balancers
-- **ECS Fargate**: Serverless containers, no EC2 management
-- **AWS Cloud Map**: Internal DNS for gRPC (`ws-service.internal:50051`)
-- **ALB**: HTTP traffic → REST service (snapshot queries)
-- **NLB**: TCP persistent connections → WS service (live streaming)
-- **ElastiCache**: Managed Redis (latest candle cache)
-- **TimescaleDB**: Historical OHLC candle storage
-- **Terraform**: Entire infrastructure as code (`terraform apply`)
+This approach avoids gaps between historical and live market data.
 
 ---
 
-## Tech Stack Summary
+# Communication Matrix
 
-| Layer | Technology |
-|---|---|
-| Language | Node.js |
-| Message Queue | Apache Kafka (`kafkajs`) |
-| Cache | Redis (`ioredis`) |
-| Time Series DB | TimescaleDB (`pg`) |
-| Internal RPC | gRPC (`@grpc/grpc-js`) |
-| REST API | Express.js |
-| WebSocket | `ws` |
-| Containerization | Docker |
-| Orchestration | AWS ECS Fargate |
-| Infrastructure | Terraform |
-| CLI Package | npm (`trade-stream-cli`) |
-| Docs Site | GitHub Pages |
+| Source            | Destination       | Technology   |
+| ----------------- | ----------------- | ------------ |
+| Ingestion Service | Kafka             | Apache Kafka |
+| Kafka             | OHLC Processor    | Apache Kafka |
+| OHLC Processor    | TimescaleDB       | PostgreSQL   |
+| OHLC Processor    | Redis             | Redis        |
+| OHLC Processor    | Kafka             | Apache Kafka |
+| Kafka             | WebSocket Service | Apache Kafka |
+| CLI               | REST API          | HTTP         |
+| CLI               | WebSocket Service | WebSocket    |
+| REST API          | Redis             | Redis        |
+| REST API          | TimescaleDB       | PostgreSQL   |
 
 ---
 
-*Open-ended streaming engine — any pair, any interval, any consumer.*
+# Design Principles
+
+The architecture follows several key principles.
+
+* Event-driven architecture
+* Independent microservices
+* Loose coupling
+* Single responsibility
+* Cache-first historical retrieval
+* Optimized time-series storage
+* Real-time streaming
+
+---
+
+# Why No gRPC?
+
+CandleFlow intentionally avoids gRPC because the system contains **no synchronous service-to-service communication**.
+
+Each service either:
+
+* communicates asynchronously through Apache Kafka, or
+* accesses shared infrastructure such as TimescaleDB and Redis.
+
+Since no service invokes another service's business logic directly, introducing gRPC would increase complexity without providing architectural value.
+
+---
+
+# Scalability
+
+Every service can be scaled independently.
+
+Examples:
+
+* Multiple Ingestion Service instances can publish to Kafka.
+* Multiple OHLC Processor instances can consume Kafka partitions.
+* Multiple WebSocket Service instances can broadcast live updates.
+* Multiple REST API instances can serve historical requests behind a load balancer.
+* Kafka partitions enable horizontal scaling without modifying application logic.
+
+---
+
+# Architecture Highlights
+
+* ✅ Event-driven
+* ✅ Loosely coupled microservices
+* ✅ Independently deployable services
+* ✅ Kafka-based communication
+* ✅ Redis cache layer
+* ✅ TimescaleDB optimized for time-series data
+* ✅ Continuous Aggregates for higher timeframes
+* ✅ REST for historical data
+* ✅ WebSocket for live streaming
+* ✅ CLI supporting both historical and live workflows
