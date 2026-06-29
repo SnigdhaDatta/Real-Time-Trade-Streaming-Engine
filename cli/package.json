@@ -1,19 +1,47 @@
 {
-  "name": "cli",
+  "name": "candleflow",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "bin": {
-    "trade-cli": "./bin/cli.js"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "module",
+  "description": "A real-time cryptocurrency market data streaming CLI built with Kafka, TimescaleDB, Redis, WebSockets, and Node.js.",
+  "main": "index.js",
+  "bin": {
+    "candleflow": "./bin/candleflow.js"
+  },
+  "scripts": {
+    "start": "node ./bin/candleflow.js",
+    "dev": "nodemon ./bin/candleflow.js"
+  },
+  "keywords": ["cli",
+  "cryptocurrency",
+  "crypto",
+  "binance",
+  "websocket",
+  "kafka",
+  "timescaledb",
+  "ohlc",
+  "candlestick",
+  "market-data",
+  "real-time",
+  "streaming",
+  "trading",
+  "terminal",
+  "nodejs"],
+  "author": "Snigdha Datta (https://github.com/SnigdhaDatta)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SnigdhaDatta/Real-Time-Trade-Streaming-Engine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SnigdhaDatta/Real-Time-Trade-Streaming-Engine/issues"
+  },
+  "homepage": "https://github.com/SnigdhaDatta/Real-Time-Trade-Streaming-Engine#readme",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
+    "chalk": "^5.6.2",
+    "figlet": "^1.11.0",
     "ws": "^8.21.0"
   }
 }
