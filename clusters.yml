@@ -1,0 +1,8 @@
+# This is the configuration file for the cluster for this candleflow project , containing gow many nodes will be there and name of cluster... basically created to make custom cluster with specification of what I want
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4 
+name : candleflow        # name of the cluster I wanna give
+nodes:
+  - role: control-plane  # master node
+  - role: worker         # worker node 1      
+  - role: worker         # worker node 2
