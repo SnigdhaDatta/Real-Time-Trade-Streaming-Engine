@@ -1,3 +1,4 @@
 export const TOPICS={
-    CRYPTO_TOP_ASSETS:"crypto.top-assets",
+    RAW_TRADES_INGESTION:"raw-trades-ingestion",
+    OHLC_DISTRIBUTION:"ohlc-distribution",
 }
