@@ -1,0 +1,19 @@
+apiVersion: apps/v1                 # signifying in which version this resource called deployment was introduced
+kind: Deployment                    # signifying what kind of kubernetes resource we are creating
+metadata:
+  name: ingestion-deployment        # name of the deployment
+spec:                               # specification for the deployment
+  replicas: 3                       # replicas signifies how many pods we want to run for this deployment, in this case we want 3 pods
+  selector:
+    matchLabels:                    # basically we use matchlabels so that repliacasets can match the labels to know which pods are of this deployment and which are not, so that it can manage the pods accordingly
+      app: ingestion                # suppose replicas are suddenly incraesed or decreased , so at that time select only those pods which have this label and then increase or decrease the number of pods accordingly... basically we use selectors to select pods by using labels set in the template as filter
+    template:                       # template basically conbtains all infos of the pods that will be used and also the info of the containers insode those pods 
+      metadata:
+        labels:
+          app: ingestion            # label all the pods that are being started under this deployment with this label so that we can use this label later as an identfoer of the pods under this deployment
+      spec:                         # specification for the containers inside the ingestion pod
+        containers:
+          - name: ingestion         # name of the container inside the pod
+            image: ingestion:latest # official image of the container which we want to run inside the pod, in this case we are using the latest version of the ingestion image that we have built and published using dockerfile to dockerhub
+            ports:
+              - containerPort: 80   # port on which the container will be listening for incoming requests, in this case we are using port 80 which is the default port for http requests
